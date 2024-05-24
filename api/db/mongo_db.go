@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"log"
-	"os"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -17,15 +16,13 @@ func MustConnectToDb(mongoUri string) (*mongo.Client, *mongo.Collection) {
 
 	client, err := mongo.Connect(context.Background(), opts)
 	if err != nil {
-		log.Println(err)
-		os.Exit(1)
+		panic(err)
 	}
 
 	// Send a ping to confirm a successful connection
 	err = client.Database("admin").RunCommand(context.Background(), bson.D{{Key: "ping", Value: 1}}).Err()
 	if err != nil {
-		log.Println(err)
-		os.Exit(1)
+		panic(err)
 	}
 	log.Println("Pinged your deployment. You successfully connected to MongoDB!")
 	coll := client.Database("tinyurl").Collection("urls")
@@ -36,8 +33,7 @@ func MustConnectToDb(mongoUri string) (*mongo.Client, *mongo.Collection) {
 
 func DisconnectClient(client *mongo.Client) {
 	if err := client.Disconnect(context.Background()); err != nil {
-		log.Println(err)
-		os.Exit(1)
+		panic(err)
 	}
 }
 
