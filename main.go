@@ -11,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 	"github.com/saeidalz13/tinyurl/api/db"
+	"github.com/saeidalz13/tinyurl/api/frontend"
 	"github.com/saeidalz13/tinyurl/api/models"
 	"github.com/saeidalz13/tinyurl/internal/url"
 	"go.mongodb.org/mongo-driver/bson"
@@ -41,51 +42,69 @@ func (s *Server) HandleGetUrl(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	shortUrl := r.PathValue("shortUrl")
+	log.Println("Short URL Request:", shortUrl)
 	var originalUrl string
 
 	resultFound, err := s.searchRedis(ctx, shortUrl)
-	if err != nil {
+	if err == nil {
 		originalUrl = resultFound.OriginalUrl
 
 	} else {
+		log.Println("Redis error:", err)
+
 		var resultFoundMongo models.UrlDocument
 		filter := bson.M{"shortened_url": shortUrl}
 		err = s.Collection.FindOne(context.Background(), filter).Decode(&resultFoundMongo)
-		if err != nil {
+		if err == nil {
 			originalUrl = resultFoundMongo.OriginalUrl
+
 		} else {
-			w.Write([]byte("Invalid url"))
+			log.Println(err)
+			http.Error(w, "Invalid URL", http.StatusNotFound)
+			return
 		}
 	}
 
-	// ! TODO: Set the header so it redirects to the original request
-	w.Header().Set("", "")
-	w.Header().Set("REDIRECT URL", originalUrl)
+	originalUrl = "https://www." + originalUrl 
+	log.Println("Original URL Found:", originalUrl)
+	http.Redirect(w, r, originalUrl, http.StatusSeeOther)
 }
 
-func (s *Server) HandleTinyUrl(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HandleShortenUrl(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
-	// Look into the request and normalize the original URL
-	var reqUrl models.ReqUrl
-	if err := json.NewDecoder(r.Body).Decode(&reqUrl); err != nil {
+	if err := r.ParseForm(); err != nil {
 		log.Println(err)
-		http.Error(w, "invalid type of json request", http.StatusBadRequest)
-		return
 	}
-	normalizedUrl := url.NormalizeURL(reqUrl.OriginalUrl)
+	originalUrl := r.FormValue("link")
+	if originalUrl == "" {
+		log.Println("nothing received from the form input")
+	} else {
+		log.Println("original url from form:", originalUrl)
+	}
+
+	// Look into the request and normalize the original URL
+	// var reqUrl models.ReqUrl
+	// if err := json.NewDecoder(r.Body).Decode(&reqUrl); err != nil {
+	// 	log.Println(err)
+	// 	http.Error(w, "invalid type of json request", http.StatusBadRequest)
+	// 	return
+	// }
+	normalizedUrl := url.NormalizeURL(originalUrl)
+	log.Println("incoming request URL:", normalizedUrl)
 
 	// Declare necessary vars
 	var shortenedUrl string
 	var resultFound models.UrlDocument
 
 	resultFound, err := s.searchRedis(ctx, normalizedUrl)
-	if err != nil {
-		// TODO: dissect this error
+	if err == nil {
 		shortenedUrl = resultFound.ShortenedUrl
 
 	} else {
+		log.Printf("Redis error: %s\n", err)
+
 		// Search MongoDB to check for available short url
 		filter := bson.M{"original_url": normalizedUrl}
 		err = s.Collection.FindOne(ctx, filter).Decode(&resultFound)
@@ -106,6 +125,7 @@ func (s *Server) HandleTinyUrl(w http.ResponseWriter, r *http.Request) {
 				CreatedAt:    time.Now(),
 				ExpiredAt:    time.Now().Add(time.Hour),
 			}
+			log.Println("Shortened URL:", doc.ShortenedUrl)
 
 			// Add the object to cache
 			if err := s.RedisClient.HSet(ctx, doc.ShortenedUrl, doc).Err(); err != nil {
@@ -127,7 +147,7 @@ func (s *Server) HandleTinyUrl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// preparing response
-	respBytes, err := json.Marshal(models.RespShortenedUrl{ShortenedUrl: shortenedUrl})
+	respBytes, err := json.Marshal(models.RespShortenedUrl{ShortenedUrl: "http://localhost:7374/"+shortenedUrl})
 	if err != nil {
 		log.Println(err)
 		http.Error(w, "response could not be prepared", http.StatusInternalServerError)
@@ -138,6 +158,14 @@ func (s *Server) HandleTinyUrl(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
+}
+
+func (s *Server) HandleHome(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		name = "Saeid"
+	}
+	frontend.Hello(name).Render(context.Background(), w)
 }
 
 func main() {
@@ -164,8 +192,9 @@ func main() {
 	}
 
 	// Handlers
+	server.mux.HandleFunc("GET /", server.HandleHome)
 	server.mux.HandleFunc("GET /{shortUrl}", server.HandleGetUrl)
-	server.mux.HandleFunc("POST /shorten-url", server.HandleTinyUrl)
+	server.mux.HandleFunc("POST /shorten-url", server.HandleShortenUrl)
 
 	// Start the server
 	log.Printf("listening to port %s...\n", server.port)
